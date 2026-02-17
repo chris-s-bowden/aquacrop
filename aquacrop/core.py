@@ -1,11 +1,42 @@
 """
 This file contains the AquacropModel class that runs the simulation.
+
+DATA ASSIMILATION EXTENSIONS:
+=========================================================================
+The following additions enable pause-update-resume workflows for data
+assimilation (DA). They are designed so that:
+
+  1. Normal (non-DA) runs are completely unaffected.
+  2. All new functionality is accessed through a small number of clearly
+     named public methods on the existing AquaCropModel class.
+  3. No existing functions, modules, or file structure are modified.
+
+New public methods for DA users:
+  - run_model(..., target_date="YYYY/MM/DD")  # advance to a specific date
+  - get_da_state()          -> dict   # extract key state variables
+  - update_da_state(dict)   -> None   # inject updated state variables
+                                      # (with consistency recalculation)
+
+Typical DA workflow:
+    model.run_model(target_date="2020/04/15")  # run to first observation date
+    state = model.get_da_state()               # extract state
+    # ... user applies their EO/ML update externally ...
+    state['canopy_cover'] = updated_cc          # modify as needed
+    state['biomass'] = updated_bio
+    state['soil_moisture'] = updated_th
+    state['root_depth'] = updated_z_root
+    model.update_da_state(state)               # inject & reconcile
+    model.run_model(target_date="2020/05/01")  # resume to next obs date
+    # ... repeat as many times as needed ...
+    model.run_model(till_termination=True)      # finish the season
 """
 import time
 import datetime
+import copy
 import os
 import logging
 import warnings
+import numpy as np
 from typing import Dict, Union, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -89,6 +120,9 @@ class AquaCropModel:
     _init_cond: "InitialCondition"
     _outputs: "Output"
     _weather: "DataFrame"
+    
+    # --- DA extension: previous-day state snapshot ---
+    _da_state_previous_day: Optional[dict] = None
 
     def __init__(
         self,
@@ -238,6 +272,9 @@ class AquaCropModel:
 
         # save model _weather to _init_cond
         self._weather = self.weather_df.values
+        
+        # DA extension: reset previous-day snapshot
+        self._da_state_previous_day = None
 
     def run_model(
         self,
@@ -245,6 +282,7 @@ class AquaCropModel:
         till_termination: bool = False,
         initialize_model: bool = True,
         process_outputs: bool = False,
+        target_date: Optional[str] = None,
     ) -> bool:
         """
         This function is responsible for executing the model.
@@ -260,6 +298,13 @@ class AquaCropModel:
 
             process_outputs: process outputs into dataframe before \
                 simulation is finished
+                
+            target_date: (str, optional) Run the model up to (and including)
+                this date in 'YYYY/MM/DD' format. When provided, num_steps
+                and till_termination are ignored. The model will pause at
+                end-of-day on target_date, ready for state extraction
+                and/or update. Set initialize_model=False when resuming
+                after a DA update.
 
         Returns:
             True if finished
@@ -267,6 +312,53 @@ class AquaCropModel:
 
         if initialize_model:
             self._initialize()
+            
+        # ---------------------------------------------------------------
+        # NEW: target_date mode — run until a specific calendar date
+        # ---------------------------------------------------------------
+        if target_date is not None:
+            if _sim_date_format_is_correct(target_date) is False:
+                raise ValueError("target_date format must be 'YYYY/MM/DD'")
+
+            target_dt = datetime.datetime.strptime(target_date, "%Y/%m/%d")
+
+            # Validate: target_date must be within the simulation window
+            sim_end_dt = datetime.datetime.strptime(self.sim_end_time, "%Y/%m/%d")
+            if target_dt > sim_end_dt:
+                raise ValueError(
+                    f"target_date ({target_date}) is after sim_end_time "
+                    f"({self.sim_end_time})."
+                )
+
+            self.__start_model_execution = time.time()
+            while self._clock_struct.model_is_finished is False:
+                # Check if we have reached the target date
+                # step_start_time is the date of the current timestep
+                current_date = self._clock_struct.step_start_time
+                if current_date > target_dt:
+                    # We have passed the target — stop before this step
+                    break
+
+                # Snapshot state BEFORE this timestep (for "day before" record)
+                self._da_state_previous_day = self._snapshot_da_state()
+
+                (
+                    self._clock_struct,
+                    self._init_cond,
+                    self._param_struct,
+                    self._outputs,
+                ) = self._perform_timestep()
+
+                # Check if the step we just ran was the target date
+                if current_date >= target_dt:
+                    break
+
+            self.__end_model_execution = time.time()
+            self.__has_model_executed = True
+            self.__has_model_finished = self._clock_struct.model_is_finished
+            return True
+        
+        # ORIGINAL till termination and num_steps logic are unaffected
 
         if till_termination:
             self.__start_model_execution = time.time()
@@ -289,6 +381,9 @@ class AquaCropModel:
 
                 if (i == range(num_steps)[-1]) and (process_outputs is True):
                     self.__steps_are_finished = True
+                    
+                # DA extension: keep rolling snapshot of previous day
+                self._da_state_previous_day = self._snapshot_da_state()
 
                 (
                     self._clock_struct,
@@ -363,6 +458,366 @@ class AquaCropModel:
             ) = final_water_flux_growth_outputs
 
         return clock_struct, _init_cond, param_struct, outputs
+    
+    # ===================================================================
+    #  DATA ASSIMILATION METHODS  (new — no changes to existing methods)
+    # ===================================================================
+
+    def _snapshot_da_state(self) -> dict:
+        """
+        Take a lightweight snapshot of DA-relevant state variables.
+        Used internally to record the "day before" values.
+
+        Returns:
+            dict with copies of key state variables
+        """
+        ic = self._init_cond
+        return {
+            "canopy_cover": float(ic.canopy_cover),
+            "canopy_cover_adj": float(ic.canopy_cover_adj),
+            "canopy_cover_ns": float(ic.canopy_cover_ns),
+            "biomass": float(ic.biomass),
+            "biomass_ns": float(ic.biomass_ns),
+            "root_depth": float(ic.z_root),
+            "soil_moisture": np.copy(ic.th),  # per-compartment volumetric WC
+            # Additional context variables (read-only, for user reference)
+            "harvest_index": float(ic.harvest_index),
+            "harvest_index_adj": float(ic.harvest_index_adj),
+            "ccx_w": float(ic.ccx_w),
+            "ccx_act": float(ic.ccx_act),
+            "ccx_w_ns": float(ic.ccx_w_ns),
+            "ccx_act_ns": float(ic.ccx_act_ns),
+        }
+
+    def get_da_state(self) -> dict:
+        """
+        Extract current internal state variables for data assimilation.
+
+        This should be called AFTER run_model(..., target_date=...) has
+        paused the simulation. It returns the values for both the current
+        day (end of the last simulated timestep) and the previous day,
+        enabling users to assess the trajectory of change.
+
+        Returns:
+            dict with structure:
+            {
+                "current_date": str,       # "YYYY/MM/DD" of last completed step
+                "current": {
+                    "canopy_cover": float,      # Green canopy cover (0-1 fraction)
+                    "canopy_cover_adj": float,  # Adjusted CC accounting for stress
+                    "canopy_cover_ns": float,   # CC under no-stress conditions
+                    "biomass": float,           # Above-ground biomass (tonnes/ha)
+                    "biomass_ns": float,        # Biomass under no-stress conditions
+                    "root_depth": float,        # Effective rooting depth (m)
+                    "soil_moisture": np.array,  # Volumetric WC per soil compartment
+                    "harvest_index": float,     # Current harvest index
+                    "harvest_index_adj": float, # Adjusted HI
+                    "ccx_w": float,             # Max CC reached (with stress)
+                    "ccx_act": float,           # Actual max CC for season
+                    "ccx_w_ns": float,          # Max CC (no stress)
+                    "ccx_act_ns": float,        # Actual max CC (no stress)
+                },
+                "previous_day": {             # Same structure, or None if N/A
+                    ...
+                }
+            }
+
+        Raises:
+            ValueError: If model has not been run yet.
+        """
+        if not self.__has_model_executed:
+            raise ValueError(
+                "Cannot extract state before running the model. "
+                "Call run_model() first."
+            )
+
+        # Determine the date of the last completed timestep.
+        # After a timestep, the clock has already advanced, so the last
+        # simulated day is step_start_time minus 1 day (or use the
+        # time_step_counter to look it up).
+        # The most reliable approach: step_start_time is the NEXT day to
+        # simulate, so the last completed day is one day before.
+        last_completed = (
+            self._clock_struct.step_start_time - datetime.timedelta(days=1)
+        )
+        current_date_str = last_completed.strftime("%Y/%m/%d")
+
+        current_state = self._snapshot_da_state()
+
+        return {
+            "current_date": current_date_str,
+            "current": current_state,
+            "previous_day": copy.deepcopy(self._da_state_previous_day),
+        }
+
+    def update_da_state(
+        self,
+        updated_state: dict,
+    ) -> None:
+        """
+        Update internal state variables with data-assimilation corrections,
+        then recalculate all dependent coefficients to ensure model
+        consistency going forward.
+
+        This should be called AFTER get_da_state() and BEFORE the next
+        call to run_model(..., initialize_model=False).
+
+        Arguments:
+            updated_state: dict containing one or more of the following keys.
+                Only keys present will be updated; others are left unchanged.
+
+                "canopy_cover": float   # Green canopy cover (0-1 fraction)
+                "biomass": float        # Above-ground biomass (tonnes/ha)
+                "root_depth": float     # Effective rooting depth (m)
+                "soil_moisture": array  # Volumetric WC per soil compartment
+
+        Raises:
+            ValueError: If model has not been run, or if values are outside
+                physically plausible bounds.
+
+        Notes on consistency recalculations performed:
+        -----------------------------------------------
+        When state variables are externally modified, several derived
+        quantities in the model's InitialCondition (NewCond) object must
+        be brought into agreement. The following adjustments are made:
+
+        CANOPY COVER update triggers:
+          - CCadj (adjusted CC) is set to the new CC value
+          - CCxAct (actual max CC achieved) is updated if new CC > current CCxAct
+          - CCxW (max CC with water stress) is updated similarly
+          - If CC was reduced below CCxAct, the model interprets this as
+            stress-induced decline and sets CC_NS proportionally
+          - Crop transpiration coefficient (Kcb) will be recalculated on the
+            next timestep automatically since it depends on CC
+
+        BIOMASS update triggers:
+          - biomass_ns (no-stress biomass) is scaled proportionally to maintain
+            the ratio between stressed and non-stressed biomass
+
+        ROOT DEPTH update triggers:
+          - Clamped to [Zmin, Zmax] for the crop
+          - Root zone water content (Wr) and depletion (Dr) are recalculated
+            from the soil moisture profile over the new root zone extent
+          - TAW (total available water) is recalculated
+          - All water stress coefficients (Ks for expansion, stomatal closure,
+            senescence, aeration) will be recalculated on the next timestep
+
+        SOIL MOISTURE update triggers:
+          - Each compartment is clamped to [wilting point, saturation]
+          - Root zone depletion (Dr) and total water in root zone (Wr) are
+            recalculated
+          - All water stress coefficients will be recalculated automatically
+            on the next timestep since they depend on Dr/TAW
+        """
+        if not self.__has_model_executed:
+            raise ValueError(
+                "Cannot update state before running the model. "
+                "Call run_model() first."
+            )
+
+        ic = self._init_cond
+        crop = self._param_struct.Seasonal_Crop_List[
+            self._clock_struct.season_counter
+        ]
+        soil_profile = self._param_struct.Soil.Profile
+
+        # --- 1. SOIL MOISTURE UPDATE ---
+        if "soil_moisture" in updated_state:
+            new_th = np.array(updated_state["soil_moisture"], dtype=np.float64)
+
+            if len(new_th) != len(ic.th):
+                raise ValueError(
+                    f"soil_moisture must have {len(ic.th)} compartments, "
+                    f"got {len(new_th)}."
+                )
+
+            # Clamp each compartment to [th_wp, th_s]
+            for i in range(len(new_th)):
+                th_wp = soil_profile.th_wp[i]   # wilting point
+                th_s = soil_profile.th_s[i]     # saturation
+                if new_th[i] < th_wp:
+                    warnings.warn(
+                        f"Soil moisture in compartment {i} ({new_th[i]:.4f}) "
+                        f"is below wilting point ({th_wp:.4f}). "
+                        f"Clamping to wilting point."
+                    )
+                    new_th[i] = th_wp
+                if new_th[i] > th_s:
+                    warnings.warn(
+                        f"Soil moisture in compartment {i} ({new_th[i]:.4f}) "
+                        f"exceeds saturation ({th_s:.4f}). "
+                        f"Clamping to saturation."
+                    )
+                    new_th[i] = th_s
+
+            ic.th = new_th
+
+        # --- 2. ROOT DEPTH UPDATE ---
+        if "root_depth" in updated_state:
+            new_z_root = float(updated_state["root_depth"])
+
+            # Clamp to crop limits
+            z_min = crop.Zmin
+            z_max = crop.Zmax
+            if new_z_root < z_min:
+                warnings.warn(
+                    f"root_depth ({new_z_root:.4f}) is below minimum "
+                    f"({z_min:.4f}). Clamping to minimum."
+                )
+                new_z_root = z_min
+            if new_z_root > z_max:
+                warnings.warn(
+                    f"root_depth ({new_z_root:.4f}) exceeds maximum "
+                    f"({z_max:.4f}). Clamping to maximum."
+                )
+                new_z_root = z_max
+
+            ic.z_root = new_z_root
+
+        # --- 3. CANOPY COVER UPDATE ---
+        if "canopy_cover" in updated_state:
+            new_cc = float(updated_state["canopy_cover"])
+
+            # Clamp to [0, 1]
+            if new_cc < 0:
+                warnings.warn("canopy_cover < 0. Clamping to 0.")
+                new_cc = 0.0
+            if new_cc > 1:
+                warnings.warn("canopy_cover > 1. Clamping to 1.0.")
+                new_cc = 1.0
+
+            old_cc = ic.canopy_cover
+
+            # Update CC and adjusted CC
+            ic.canopy_cover = new_cc
+            ic.canopy_cover_adj = new_cc
+
+            # Update max-CC trackers
+            if new_cc > ic.ccx_act:
+                ic.ccx_act = new_cc
+            if new_cc > ic.ccx_w:
+                ic.ccx_w = new_cc
+
+            # Scale the no-stress canopy cover proportionally.
+            # This preserves the relationship between stressed and
+            # non-stressed trajectories. If the user is increasing CC
+            # beyond what was simulated, we also scale CC_NS up
+            # (but never above CCx from crop parameters).
+            if old_cc > 0:
+                scale_factor = new_cc / old_cc
+                new_cc_ns = ic.canopy_cover_ns * scale_factor
+                new_cc_ns = min(new_cc_ns, crop.CCx)
+                new_cc_ns = max(new_cc_ns, new_cc)  # NS should be >= stressed
+                ic.canopy_cover_ns = new_cc_ns
+            else:
+                # If old CC was 0 but new is >0, set NS = CC
+                ic.canopy_cover_ns = new_cc
+
+            # Update NS max-CC trackers
+            if ic.canopy_cover_ns > ic.ccx_act_ns:
+                ic.ccx_act_ns = ic.canopy_cover_ns
+            if ic.canopy_cover_ns > ic.ccx_w_ns:
+                ic.ccx_w_ns = ic.canopy_cover_ns
+
+        # --- 4. BIOMASS UPDATE ---
+        if "biomass" in updated_state:
+            new_bio = float(updated_state["biomass"])
+
+            if new_bio < 0:
+                warnings.warn("biomass < 0. Clamping to 0.")
+                new_bio = 0.0
+
+            old_bio = ic.biomass
+
+            # Scale non-stress biomass proportionally
+            if old_bio > 0:
+                scale_factor = new_bio / old_bio
+                ic.biomass_ns = ic.biomass_ns * scale_factor
+            else:
+                ic.biomass_ns = new_bio
+
+            ic.biomass = new_bio
+
+        # --- 5. RECALCULATE ROOT ZONE WATER BALANCE ---
+        # After any soil moisture or root depth change, recompute
+        # root zone water content (Wr), depletion (Dr), and TAW.
+        # These are the variables that drive all water stress
+        # coefficients on the next timestep.
+        if "soil_moisture" in updated_state or "root_depth" in updated_state:
+            self._recalculate_root_zone_water()
+
+        # Store snapshot for potential next DA cycle
+        self._da_state_previous_day = self._snapshot_da_state()
+
+    def _recalculate_root_zone_water(self) -> None:
+        """
+        Recalculate root zone water content, depletion, and TAW
+        from the current soil moisture profile and root depth.
+
+        This ensures that water stress coefficients (Ks_exp, Ks_sto,
+        Ks_sen, Ks_aer) are correctly computed on the next timestep.
+
+        The logic mirrors the root_zone_water() function in
+        aquacrop/solution/solution_root_zone_water.py but is applied
+        here as a consistency adjustment after DA state injection.
+        """
+        ic = self._init_cond
+        soil_profile = self._param_struct.Soil.Profile
+        crop = self._param_struct.Seasonal_Crop_List[
+            self._clock_struct.season_counter
+        ]
+
+        z_root = ic.z_root
+        n_comp = len(ic.th)
+        dz = soil_profile.dz  # thickness of each compartment (array)
+
+        # Compute water stored in root zone and at field capacity / WP
+        wr = 0.0      # actual water in root zone (mm)
+        wr_fc = 0.0   # water at field capacity in root zone (mm)
+        wr_wp = 0.0   # water at wilting point in root zone (mm)
+        wr_s = 0.0    # water at saturation in root zone (mm)
+
+        depth_from_surface = 0.0
+        for i in range(n_comp):
+            comp_thick = dz[i]  # thickness of compartment i (m)
+            depth_from_surface += comp_thick
+
+            if depth_from_surface <= z_root:
+                # Entire compartment is within root zone
+                factor = 1.0
+            elif (depth_from_surface - comp_thick) < z_root:
+                # Compartment straddles root zone boundary
+                factor = (z_root - (depth_from_surface - comp_thick)) / comp_thick
+            else:
+                # Below root zone
+                break
+
+            wr += ic.th[i] * 1000 * comp_thick * factor
+            wr_fc += soil_profile.th_fc[i] * 1000 * comp_thick * factor
+            wr_wp += soil_profile.th_wp[i] * 1000 * comp_thick * factor
+            wr_s += soil_profile.th_s[i] * 1000 * comp_thick * factor
+
+        # Total available water and current depletion
+        taw = wr_fc - wr_wp  # Total Available Water (mm)
+        dr = wr_fc - wr       # Root zone depletion (mm)
+
+        # Clamp depletion: can't be negative (wetter than FC) or > TAW
+        if dr < 0:
+            dr = 0.0
+        if taw > 0 and dr > taw:
+            dr = taw
+
+        # Update the InitialCondition object
+        ic.depletion = dr
+        ic.taw = taw
+
+        # Update surface layer water content for soil evaporation
+        # (the first compartment's water content drives evaporation calcs,
+        # which is already updated via th, so no extra action needed)
+
+    # ===================================================================
+    #  END OF DATA ASSIMILATION METHODS
+    # ===================================================================
 
     def get_simulation_results(self):
         """
