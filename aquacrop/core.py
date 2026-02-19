@@ -26,9 +26,9 @@ Typical DA workflow:
     state['soil_moisture'] = updated_th
     state['root_depth'] = updated_z_root
     model.update_da_state(state)               # inject & reconcile
-    model.run_model(target_date="2020/05/01")  # resume to next obs date
+    model.run_model(target_date="2020/05/01", initialize_model = False)  # resume to next obs date
     # ... repeat as many times as needed ...
-    model.run_model(till_termination=True)      # finish the season
+    model.run_model(till_termination=True, initialize_model = False)      # finish the season
 """
 import time
 import datetime
