@@ -55,7 +55,7 @@ class CO2(object):
                     header=1, sep='\s+', names=["year", "ppm"])
         else:
             self.co2_data = pd.read_csv(
-                    f"{acfp}/data/MaunaLoaCO2.txt",
+                    f"{acfp}/data/co2/MaunaLoaCO2.txt",
                     header=1, sep='\s+', names=["year", "ppm"],
     )
         self.co2_data_processed = None
