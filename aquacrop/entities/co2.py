@@ -42,21 +42,20 @@ class CO2(object):
         self.ref_concentration = ref_concentration
         self.current_concentration = current_concentration
         self.constant_conc = constant_conc
+        
         if co2_data is not None:
             self.co2_data = co2_data
-        elif scenario is not None:
-            key = scenario.lower().replace("-","").replace("_","").replace(".","")
-            if key not in self._BUILTIN:
-                raise ValueError(
-                    f"Unknown CO2 scenario '{scenario}'."
-                    f"Options: {sorted(self._BUILTIN)}")
-                self.co2_data = pd.read_csv(
-                    f"{acfp}/data/co2/{self._BUILTIN[key]}", 
-                    header=1, sep='\s+', names=["year", "ppm"])
         else:
+            if scenario is not None:
+                key = scenario.lower().replace("-", "").replace("_", "").replace(".", "")
+                if key not in self._BUILTIN:
+                    raise ValueError(
+                        f"Unknown CO2 scenario '{scenario}'. Options: {sorted(self._BUILTIN)}")
+                fname = self._BUILTIN[key]
+            else:
+                fname = "MaunaLoaCO2.txt"
             self.co2_data = pd.read_csv(
-                    f"{acfp}/data/co2/MaunaLoaCO2.txt",
-                    header=1, sep='\s+', names=["year", "ppm"],
-    )
+                f"{acfp}/data/co2/{fname}", header=1, sep=r"\s+", names=["year", "ppm"])
+    
         self.co2_data_processed = None
 
