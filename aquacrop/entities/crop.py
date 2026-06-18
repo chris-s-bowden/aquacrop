@@ -284,6 +284,13 @@ class Crop:
             "HIstartCD",
             "FloweringCD",
             "YldFormCD",
+            "PlantTrigger",     # bool/str flag; falsy = disabled (default)
+            "PlantTempThr",     # °C, mean-temp threshold (None = off)
+            "PlantTWindow",     # int, consecutive days required (default 5)
+            "PlantRainThr",     # mm, accumulated rain over window (None = off)
+            "PlantRainWindow",  # int, days to accumulate rain over
+            "PlantSMThr",       # m3/m3 topsoil threshold (None = off)
+            "PlantMaxDelay",    # int, max days planting may slip (default e.g. 60)
         }
 
         self.__dict__.update(

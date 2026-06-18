@@ -39,6 +39,7 @@ from .timestep.check_if_model_is_finished import check_model_is_finished
 from .timestep.run_single_timestep import solution_single_time_step
 from .timestep.update_time import update_time
 from .timestep.outputs_when_model_is_finished import outputs_when_model_is_finished
+from .adaptive_planting import adaptive_planting_date
 
 class AquaCropModel:
     """
@@ -238,6 +239,10 @@ class AquaCropModel:
 
         # save model _weather to _init_cond
         self._weather = self.weather_df.values
+        
+        # set up adaptive planting for season 0 (update_time is not run)
+        self._clock_struct.planting_dates[0] = adaptive_planting_date(
+            self._clock_struct.planting_dates[0], self._weather, self.crop, self._init_cond)
 
     def run_model(
         self,
