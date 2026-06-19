@@ -39,7 +39,7 @@ from .timestep.check_if_model_is_finished import check_model_is_finished
 from .timestep.run_single_timestep import solution_single_time_step
 from .timestep.update_time import update_time
 from .timestep.outputs_when_model_is_finished import outputs_when_model_is_finished
-from .adaptive_planting import adaptive_planting_date
+from .timestep.adaptive_planting import adaptive_planting_date
 
 class AquaCropModel:
     """

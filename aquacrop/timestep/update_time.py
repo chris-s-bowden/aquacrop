@@ -4,12 +4,13 @@ Update time function
 from .reset_initial_conditions import reset_initial_conditions
 from .adaptive_planting import adaptive_planting_date
 
+import pandas as pd
+
 from typing import Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     # Important: classes are only imported when types are checked, not in production.
     from numpy import ndarray
-    import pandas as pd
     from aquacrop.entities.clockStruct import ClockStruct
     from aquacrop.entities.initParamVariables import InitialCondition
     from aquacrop.entities.paramStruct import ParamStruct
