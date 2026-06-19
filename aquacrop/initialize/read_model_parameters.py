@@ -192,8 +192,8 @@ def read_model_parameters(
     param_struct.CropChoices = list(crop_choices)
 
     # save clock paramaters
-    clock_struct.planting_dates = pd.to_datetime(planting_dates)
-    clock_struct.harvest_dates = pd.to_datetime(harvest_dates)
+    clock_struct.planting_dates = list(pd.to_datetime(planting_dates))
+    clock_struct.harvest_dates  = list(pd.to_datetime(harvest_dates))
     clock_struct.n_seasons = len(planting_dates)
 
     # Initialise growing season counter
