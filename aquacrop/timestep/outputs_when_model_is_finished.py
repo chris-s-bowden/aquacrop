@@ -55,6 +55,7 @@ def outputs_when_model_is_finished(
                 "Infl",
                 "Runoff",
                 "DeepPerc",
+                "TileDrain",
                 "CR",
                 "GwIn",
                 "Es",
