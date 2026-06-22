@@ -4,10 +4,7 @@ Shared pytest fixtures and configuration for the AquaCrop-OSPy test suite.
 Two things are centralised here so they don't have to be repeated in every
 test module:
 
-1. ``DEVELOPMENT`` is set before aquacrop is imported, which disables the
-   ahead-of-time compilation path. conftest.py is imported by pytest before any
-   test module, so setting it here covers the whole suite.
-2. The weather data is loaded once per session (the climate files are large),
+- The weather data is loaded once per session (the climate files are large),
    and exposed as fixtures.
 
 Numerical outputs are compared with a tolerance rather than exact equality.
@@ -19,9 +16,6 @@ as ``value == pytest.approx(expected, **MODEL_TOL)``.
 """
 import os
 import sys
-
-# Must be set before aquacrop is imported anywhere.
-os.environ.setdefault("DEVELOPMENT", "True")
 
 # aquacrop's __init__ only binds AquaCropModel/Soil/Crop/etc. when "-m" is NOT
 # in sys.argv. Running "pytest -m '<marker>'" puts "-m" in sys.argv and would
