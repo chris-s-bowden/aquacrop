@@ -17,6 +17,7 @@ from ..solution.growth_stage import growth_stage
 from ..solution.canopy_cover import canopy_cover
 from ..solution.transpiration import transpiration
 from ..solution.groundwater_inflow import groundwater_inflow
+from ..solution.tile_drainage import tile_drainage
 from ..solution.harvest_index import harvest_index
 
 
@@ -205,6 +206,13 @@ def solution_single_time_step(
         NewCond.th,
         NewCond.th_fc_Adj,
     )
+    
+    # 4b. Simplified tile/lateral drainage (off by default)
+    TileDrain = 0.0
+    if getattr(Soil, "tile_drainage", False):
+        NewCond.th, TileDrain = tile_drainage(
+            Soil.Profile, NewCond.th, Soil.drain_depth,
+            Soil.drain_target, Soil.drain_coeff)
 
     # 5. Surface runoff
     Runoff, Infl, NewCond.day_submerged = rainfall_partition(
@@ -486,6 +494,7 @@ def solution_single_time_step(
         Infl,
         Runoff,
         DeepPerc,
+        TileDrain,
         CR,
         GwIn,
         Es,

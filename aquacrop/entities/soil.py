@@ -44,9 +44,19 @@ class Soil:
         adj_cn=1,
         fshape_cr=16,
         z_top=0.1,
+        tile_drainage=False,
+        drain_depth=None,
+        drain_target=None,
+        drain_coeff=1.0
     ):
 
         self.Name = soil_type
+        
+        # Soil drainage characteristics:
+        self.tile_drainage = tile_drainage   # master flag
+        self.drain_depth = drain_depth       # m; remove from compartments below this
+        self.drain_target = drain_target     # m3/m3 cap; None -> field capacity
+        self.drain_coeff = drain_coeff       # 0–1 fraction of excess removed per day
 
         self.zSoil = sum(dz)  # Total thickness of soil profile (m)
         self.nComp = len(dz)  # Total number of soil compartments

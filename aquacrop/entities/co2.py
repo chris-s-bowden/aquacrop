@@ -19,6 +19,17 @@ class CO2(object):
         co2_data (DataFrame): CO2 timeseries (2 columns: 'year' and 'ppm')
 
     """
+    
+    _BUILTIN = {
+        "ssp119":   "CO2_SSP1-1.9.txt",
+        "ssp126":   "CO2_SSP1-2.6.txt",
+        "ssp245":   "CO2_SSP2-4.5.txt",
+        "ssp370":   "CO2_SSP3-7.0.txt",
+        "ssp434":   "CO2_SSP4-3.4.txt",
+        "ssp460":   "CO2_SSP4-6.0.txt",
+        "ssp534os": "CO2_SSP5-3.4-OS.txt",
+        "ssp585":   "CO2_SSP5-8.5.txt",
+    }
 
     def __init__(
         self,
@@ -26,18 +37,25 @@ class CO2(object):
         current_concentration=0.,
         constant_conc=False,
         co2_data=None,
+        scenario=None
     ):
         self.ref_concentration = ref_concentration
         self.current_concentration = current_concentration
         self.constant_conc = constant_conc
+        
         if co2_data is not None:
             self.co2_data = co2_data
         else:
+            if scenario is not None:
+                key = scenario.lower().replace("-", "").replace("_", "").replace(".", "")
+                if key not in self._BUILTIN:
+                    raise ValueError(
+                        f"Unknown CO2 scenario '{scenario}'. Options: {sorted(self._BUILTIN)}")
+                fname = self._BUILTIN[key]
+            else:
+                fname = "MaunaLoaCO2.txt"
             self.co2_data = pd.read_csv(
-                    f"{acfp}/data/MaunaLoaCO2.txt",
-                    header=1,
-                    sep='\s+',
-                    names=["year", "ppm"],
-    )
+                f"{acfp}/data/co2/{fname}", header=1, sep=r"\s+", names=["year", "ppm"])
+    
         self.co2_data_processed = None
 
