@@ -15,18 +15,7 @@ original exact-equality tests to fail intermittently across the CI matrix.
 as ``value == pytest.approx(expected, **MODEL_TOL)``.
 """
 import os
-import sys
 
-# aquacrop's __init__ only binds AquaCropModel/Soil/Crop/etc. when "-m" is NOT
-# in sys.argv. Running "pytest -m '<marker>'" puts "-m" in sys.argv and would
-# leave aquacrop half-imported. Import it once here with a sanitized argv so the
-# names are bound and cached before any test module needs them.
-_orig_argv = sys.argv
-try:
-    sys.argv = [sys.argv[0]]
-    import aquacrop  # noqa: F401
-finally:
-    sys.argv = _orig_argv
 
 import pytest
 
